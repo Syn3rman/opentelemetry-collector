@@ -49,6 +49,7 @@ require (
 	github.com/tinylib/msgp v1.1.5
 	github.com/uber/jaeger-lib v2.4.0+incompatible
 	go.opencensus.io v0.22.5
+	go.opentelemetry.io/otel v0.15.0
 	go.uber.org/atomic v1.7.0
 	go.uber.org/zap v1.16.0
 	golang.org/x/sys v0.0.0-20201015000850-e3ed0017c211

@@ -16,6 +16,7 @@ package fluentforwardreceiver
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 
@@ -23,11 +24,13 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/pdata"
 )
 
 // Give the event channel a bit of buffer to help reduce backpressure on
 // FluentBit and increase throughput.
 const eventChannelLength = 100
+const traceChannelLength = 100
 
 type fluentReceiver struct {
 	collector *Collector
@@ -38,19 +41,22 @@ type fluentReceiver struct {
 	cancel    context.CancelFunc
 }
 
-func newFluentReceiver(logger *zap.Logger, conf *Config, next consumer.LogsConsumer) (component.LogsReceiver, error) {
+func newFluentReceiver(logger *zap.Logger, conf *Config, next consumer.LogsConsumer, nexttc consumer.TracesConsumer) (component.LogsReceiver, component.TracesReceiver, error) {
 	eventCh := make(chan Event, eventChannelLength)
+	traceCh := make(chan pdata.Traces, traceChannelLength)
 
-	collector := newCollector(eventCh, next, logger)
+	collector := newCollector(eventCh, traceCh, next, nexttc, logger)
 
-	server := newServer(eventCh, logger)
+	server := newServer(eventCh, traceCh, logger)
 
-	return &fluentReceiver{
+	receiver := &fluentReceiver{
 		collector: collector,
 		server:    server,
 		conf:      conf,
 		logger:    logger,
-	}, nil
+	}
+
+	return receiver, receiver, nil
 }
 
 func (r *fluentReceiver) Start(ctx context.Context, _ component.Host) error {
@@ -78,6 +84,8 @@ func (r *fluentReceiver) Start(ctx context.Context, _ component.Host) error {
 	}
 
 	r.listener = listener
+
+	fmt.Println("Listen address: ", listenAddr)
 
 	r.server.Start(receiverCtx, listener)
 

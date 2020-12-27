@@ -34,7 +34,8 @@ func NewFactory() component.ReceiverFactory {
 	return receiverhelper.NewFactory(
 		typeStr,
 		createDefaultConfig,
-		receiverhelper.WithLogs(createLogsReceiver))
+		receiverhelper.WithLogs(createLogsReceiver),
+		receiverhelper.WithTraces(createTracesReceiver))
 }
 
 func createDefaultConfig() configmodels.Receiver {
@@ -52,7 +53,19 @@ func createLogsReceiver(
 	cfg configmodels.Receiver,
 	consumer consumer.LogsConsumer,
 ) (component.LogsReceiver, error) {
+	rCfg := cfg.(*Config)
+	log, _, err := newFluentReceiver(params.Logger, rCfg, consumer, nil)
+	return log, err
+}
+
+func createTracesReceiver(
+	_ context.Context,
+	params component.ReceiverCreateParams,
+	cfg configmodels.Receiver,
+	consumer consumer.TracesConsumer,
+) (component.TracesReceiver, error) {
 
 	rCfg := cfg.(*Config)
-	return newFluentReceiver(params.Logger, rCfg, consumer)
+	_, trace, err := newFluentReceiver(params.Logger, rCfg, nil, consumer)
+	return trace, err
 }
