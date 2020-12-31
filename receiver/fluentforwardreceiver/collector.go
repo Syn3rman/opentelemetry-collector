@@ -16,7 +16,6 @@ package fluentforwardreceiver
 
 import (
 	"context"
-	"fmt"
 
 	"go.opencensus.io/stats"
 	"go.uber.org/zap"
@@ -31,20 +30,20 @@ import (
 // instances from several Forward events into one to hopefully reduce
 // allocations and GC overhead.
 type Collector struct {
-	nextConsumer      consumer.LogsConsumer
-	nextTraceConsumer consumer.TracesConsumer
-	eventCh           <-chan Event
-	tracesCh          <-chan pdata.Traces
-	logger            *zap.Logger
+	logConsumer   consumer.LogsConsumer
+	traceConsumer consumer.TracesConsumer
+	eventCh       <-chan Event
+	tracesCh      <-chan pdata.Traces
+	logger        *zap.Logger
 }
 
-func newCollector(eventCh <-chan Event, tracesCh <-chan pdata.Traces, next consumer.LogsConsumer, nexttc consumer.TracesConsumer, logger *zap.Logger) *Collector {
+func newCollector(eventCh <-chan Event, tracesCh <-chan pdata.Traces, lc consumer.LogsConsumer, tc consumer.TracesConsumer, logger *zap.Logger) *Collector {
 	return &Collector{
-		nextConsumer:      next,
-		nextTraceConsumer: nexttc,
-		eventCh:           eventCh,
-		tracesCh:          tracesCh,
-		logger:            logger,
+		logConsumer:   lc,
+		traceConsumer: tc,
+		eventCh:       eventCh,
+		tracesCh:      tracesCh,
+		logger:        logger,
 	}
 }
 
@@ -64,11 +63,10 @@ func (c *Collector) processEvents(ctx context.Context) {
 			buffered = fillBufferUntilChanEmpty(c.eventCh, buffered)
 
 			logs := collectLogRecords(buffered)
-			c.nextConsumer.ConsumeLogs(ctx, logs)
+			c.logConsumer.ConsumeLogs(ctx, logs)
 
 		case t := <-c.tracesCh:
-			fmt.Printf("%+v\n%T", t, t)
-			c.nextTraceConsumer.ConsumeTraces(ctx, t)
+			c.traceConsumer.ConsumeTraces(ctx, t)
 		}
 	}
 }
@@ -91,7 +89,6 @@ func collectLogRecords(events []Event) pdata.Logs {
 
 	logs.Resize(1)
 	rls := logs.At(0)
-	fmt.Printf("%T %T\n", rls, rls.Resource)
 	// rls.Resource() := pdata.NewResourceLogs()
 	rls.InstrumentationLibraryLogs().Resize(1)
 	logSlice := rls.InstrumentationLibraryLogs().At(0).Logs()

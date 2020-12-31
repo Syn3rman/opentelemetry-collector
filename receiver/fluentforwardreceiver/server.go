@@ -17,6 +17,7 @@ package fluentforwardreceiver
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -30,7 +31,6 @@ import (
 
 	"go.opentelemetry.io/collector/consumer/pdata"
 	"go.opentelemetry.io/collector/internal/data"
-	v11 "go.opentelemetry.io/collector/internal/data/opentelemetry-proto-gen/common/v1"
 	otlptrace "go.opentelemetry.io/collector/internal/data/opentelemetry-proto-gen/trace/v1"
 	"go.opentelemetry.io/collector/receiver/fluentforwardreceiver/observ"
 )
@@ -120,17 +120,14 @@ func (s *server) handleConn(ctx context.Context, conn net.Conn) error {
 
 		tag, err := readTag(reader)
 		if err != nil {
-			fmt.Println(err)
 			return fmt.Errorf("Error in reading tag: %v", err)
 		}
 
 		if tag == "span.test" {
-			fmt.Println("Parsing span")
 			traces, err := parseSpan(reader)
 			if err != nil {
 				return fmt.Errorf("Error in parsing span: %v", err)
 			}
-
 			s.traceCh <- traces
 
 		} else {
@@ -166,6 +163,7 @@ func readTag(dc *msgp.Reader) (string, error) {
 		err = msgp.WrapError(err)
 		return "", err
 	}
+
 	if arrLen < 2 || arrLen > 3 {
 		err = msgp.ArrayError{Wanted: 2, Got: arrLen}
 		return "", err
@@ -181,16 +179,16 @@ func readTag(dc *msgp.Reader) (string, error) {
 func parseSpan(dc *msgp.Reader) (pdata.Traces, error) {
 
 	var err error
-	var traces pdata.Traces
+	traceData := pdata.NewTraces()
 
 	_, err = dc.ReadArrayHeader()
 	if err != nil {
-		return traces, msgp.WrapError(err)
+		return traceData, msgp.WrapError(err)
 	}
 
 	_, err = dc.ReadArrayHeader()
 	if err != nil {
-		return traces, msgp.WrapError(err, "Record")
+		return traceData, msgp.WrapError(err, "Record")
 	}
 
 	// Since the first field is the end timestamp of the span and it is already present in the span field,
@@ -198,90 +196,150 @@ func parseSpan(dc *msgp.Reader) (pdata.Traces, error) {
 
 	err = dc.Skip()
 
-	var resourceSpan otlptrace.ResourceSpans
-	var ils otlptrace.InstrumentationLibrarySpans
-	var span otlptrace.Span
-	var instrumentationLibrary v11.InstrumentationLibrary
-	var status otlptrace.Status
+	rss := traceData.ResourceSpans()
+	rss.Resize(1)
+	rs := rss.At(0)
+
+	ilss := rs.InstrumentationLibrarySpans()
+	ilss.Resize(1)
+
+	err = fluentSpanToInternal(dc, ilss)
+	if err != nil {
+		return traceData, err
+	}
+	return traceData, nil
+}
+
+func fluentSpanToInternal(dc *msgp.Reader, dest pdata.InstrumentationLibrarySpansSlice) error {
+	spanSlice := dest.At(0).Spans()
+	spanSlice.Resize(1)
+	span := spanSlice.At(0)
 
 	// Decode map of attributes
 	attrLen, err := dc.ReadMapHeader()
 	if err != nil {
-		return traces, msgp.WrapError(err, "Map")
+		return msgp.WrapError(err, "Map")
 	}
 	for attrLen > 0 {
 		attrLen--
 		key, err := dc.ReadString()
 		if err != nil {
-			return traces, msgp.WrapError(err, "Attribute key")
+			return msgp.WrapError(err, "Attribute key")
 		}
 		val, err := dc.ReadIntf()
 		if err != nil {
-			return traces, msgp.WrapError(err, "Attribute value")
+			return msgp.WrapError(err, "Attribute value")
 		}
 		switch key {
 		case "traceId":
 			var traceId [16]byte
-			copy(traceId[:], val.(string))
-			span.TraceId = data.NewTraceID(traceId)
+			decoded, err := hex.DecodeString(val.(string))
+			if err != nil {
+				fmt.Errorf("Error while parsing TraceID: %v", err)
+			}
+			copy(traceId[:], decoded)
+			span.SetTraceID(pdata.TraceID(data.NewTraceID(traceId)))
 		case "spanId":
 			var spanId [8]byte
 			copy(spanId[:], val.(string))
-			span.SpanId = data.NewSpanID(spanId)
+			span.SetSpanID(pdata.NewSpanID(spanId))
 		case "parentSpanId":
 			var parentSpanId [8]byte
 			copy(parentSpanId[:], val.(string))
-			span.ParentSpanId = data.NewSpanID(parentSpanId)
+			span.SetSpanID(pdata.SpanID(data.NewSpanID(parentSpanId)))
 		case "name":
-			span.Name = val.(string)
+			span.SetName(val.(string))
 		case "spanKind":
-			span.Kind = otlptrace.Span_SpanKind(val.(int64))
+			span.SetKind(pdata.SpanKind(otlptrace.Span_SpanKind(val.(int64))))
 		case "startTime":
-			span.StartTimeUnixNano = val.(uint64)
+			span.SetStartTime(pdata.TimestampUnixNano(val.(uint64)))
 		case "endTime":
-			span.EndTimeUnixNano = val.(uint64)
+			span.SetEndTime(pdata.TimestampUnixNano(val.(uint64)))
 		case "attrs":
-			attributes := attributesToInternal(val.(map[string](interface{})))
-			span.Attributes = attributes
+			setAttributes(val.(map[string](interface{})), span.Attributes())
+		case "droppedAttributesCount":
+			span.SetDroppedAttributesCount(uint32(val.(int64)))
+		case "links":
+			err = linksToInternal(val.([]interface{}), span.Links())
+			if err != nil {
+				return fmt.Errorf("Error in setting links: %v", err)
+			}
+		case "droppedLinkCount":
+			span.SetDroppedLinksCount(uint32(val.(int64)))
+		case "messageEvents":
+			eventsToInternal(val.([]interface{}), span)
+		case "droppedMessageEventCount":
+			span.SetDroppedEventsCount(uint32(val.(int64)))
 		case "statusCode":
 			code, _ := strconv.Atoi(val.(string))
-			status.Code = otlptrace.Status_StatusCode(code)
+			span.Status().SetCode(pdata.StatusCode(otlptrace.Status_StatusCode(code)))
 		case "statusMessage":
-			status.Message = val.(string)
+			span.Status().SetMessage(val.(string))
 		case "instrumentationLibraryName":
-			instrumentationLibrary.Name = val.(string)
+			dest.At(0).InstrumentationLibrary().SetName(val.(string))
 		case "instrumentationLibraryVersion":
-			instrumentationLibrary.Version = val.(string)
+			dest.At(0).InstrumentationLibrary().SetVersion(val.(string))
 		default:
-			fmt.Printf("%v: %v\n", key, val)
-			// return fmt.Errorf("Encountered unknown field while parsing span")
+			return errors.New("Encountered unknown field while parsing span")
 		}
 	}
-	span.Status = status
-	ils.InstrumentationLibrary = instrumentationLibrary
-	fmt.Printf("Span: %+v\n", span)
-	// var ilsSpans []*otlptrace.Span
-	// ilsSpans = append(ilsSpans, &span)
-	ils.Spans = []*otlptrace.Span{}
-	ils.Spans = append(ils.Spans, &span)
-	resourceSpan.InstrumentationLibrarySpans = []*otlptrace.InstrumentationLibrarySpans{&ils}
-	fmt.Printf("Resource span: %#v\n", resourceSpan.InstrumentationLibrarySpans)
-	traces = pdata.TracesFromOtlp([]*otlptrace.ResourceSpans{&resourceSpan})
-	fmt.Printf("Traces: %+v\n", traces)
-	return traces, nil
+	return nil
 }
 
-func attributesToInternal(attrs map[string]interface{}) []v11.KeyValue {
-	var attributes []v11.KeyValue
-	for k, v := range attrs {
-		switch val := v.(type) {
-		case string:
-			sval := &v11.AnyValue_StringValue{val}
-			temp := v11.AnyValue{Value: sval}
-			attributes = append(attributes, v11.KeyValue{Key: k, Value: temp})
+func linksToInternal(fluentSpanLinks []interface{}, dest pdata.SpanLinkSlice) error {
+	dest.Resize(len(fluentSpanLinks))
+	for idx, val := range fluentSpanLinks {
+		link := dest.At(idx)
+		for k, v := range val.(map[string]interface{}) {
+			switch k {
+			case "attrs":
+				setAttributes(v.(map[string]interface{}), link.Attributes())
+			case "spanId":
+				var spanId [8]byte
+				copy(spanId[:], val.(string))
+				link.SetSpanID(pdata.SpanID(data.NewSpanID(spanId)))
+			case "traceId":
+				var traceId [16]byte
+				decoded, err := hex.DecodeString(v.(string))
+				if err != nil {
+					return fmt.Errorf("Error while parsing TraceID: %v", err)
+				}
+				copy(traceId[:], decoded)
+				link.SetTraceID(pdata.TraceID(data.NewTraceID(traceId)))
+			}
 		}
 	}
-	return attributes
+	return nil
+}
+
+func eventsToInternal(fluentMessageEvents []interface{}, dest pdata.Span) {
+	events := dest.Events()
+	events.Resize(len(fluentMessageEvents))
+	for idx, val := range fluentMessageEvents {
+		event := events.At(idx)
+		for k, v := range val.(map[string]interface{}) {
+			switch k {
+			case "attrs":
+				setAttributes(v.(map[string]interface{}), event.Attributes())
+			case "ts":
+				event.SetTimestamp(pdata.TimestampUnixNano(v.(uint64)))
+			case "name":
+				event.SetName(v.(string))
+			}
+		}
+	}
+}
+
+func setAttributes(fluentAttrs map[string]interface{}, dest pdata.AttributeMap) {
+	dest.InitEmptyWithCapacity(len(fluentAttrs))
+	for k, v := range fluentAttrs {
+		switch v.(type) {
+		case string:
+			dest.InsertString(k, v.(string))
+		case uint64:
+			dest.InsertInt(k, int64(v.(uint64)))
+		}
+	}
 }
 
 // DetermineNextEventMode inspects the next bit of data from the given peeker

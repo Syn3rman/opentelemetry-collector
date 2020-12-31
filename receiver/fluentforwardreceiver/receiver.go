@@ -16,7 +16,6 @@ package fluentforwardreceiver
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"strings"
 
@@ -41,7 +40,7 @@ type fluentReceiver struct {
 	cancel    context.CancelFunc
 }
 
-func newFluentReceiver(logger *zap.Logger, conf *Config, next consumer.LogsConsumer, nexttc consumer.TracesConsumer) (component.LogsReceiver, component.TracesReceiver, error) {
+func newFluentReceiver(logger *zap.Logger, conf *Config, next consumer.LogsConsumer, nexttc consumer.TracesConsumer) (*fluentReceiver, error) {
 	eventCh := make(chan Event, eventChannelLength)
 	traceCh := make(chan pdata.Traces, traceChannelLength)
 
@@ -56,7 +55,7 @@ func newFluentReceiver(logger *zap.Logger, conf *Config, next consumer.LogsConsu
 		logger:    logger,
 	}
 
-	return receiver, receiver, nil
+	return receiver, nil
 }
 
 func (r *fluentReceiver) Start(ctx context.Context, _ component.Host) error {
@@ -84,8 +83,6 @@ func (r *fluentReceiver) Start(ctx context.Context, _ component.Host) error {
 	}
 
 	r.listener = listener
-
-	fmt.Println("Listen address: ", listenAddr)
 
 	r.server.Start(receiverCtx, listener)
 

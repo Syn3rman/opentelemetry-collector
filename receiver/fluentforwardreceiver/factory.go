@@ -53,9 +53,13 @@ func createLogsReceiver(
 	cfg configmodels.Receiver,
 	consumer consumer.LogsConsumer,
 ) (component.LogsReceiver, error) {
-	rCfg := cfg.(*Config)
-	log, _, err := newFluentReceiver(params.Logger, rCfg, consumer, nil)
-	return log, err
+
+	recv, err := createReceiver(cfg, params)
+	if err != nil {
+		return nil, err
+	}
+	recv.collector.logConsumer = consumer
+	return recv, err
 }
 
 func createTracesReceiver(
@@ -65,7 +69,30 @@ func createTracesReceiver(
 	consumer consumer.TracesConsumer,
 ) (component.TracesReceiver, error) {
 
+	recv, err := createReceiver(cfg, params)
+	if err != nil {
+		return nil, err
+	}
+	recv.collector.traceConsumer = consumer
+	return recv, err
+}
+
+// This is the map of already created OpenCensus receivers for particular configurations.
+// We maintain this map because the Factory is asked trace and metric receivers separately
+// when it gets CreateTracesReceiver() and CreateMetricsReceiver() but they must not
+// create separate objects, they must use one ocReceiver object per configuration.
+var receivers = map[*Config]*fluentReceiver{}
+
+func createReceiver(cfg configmodels.Receiver, params component.ReceiverCreateParams) (*fluentReceiver, error) {
 	rCfg := cfg.(*Config)
-	_, trace, err := newFluentReceiver(params.Logger, rCfg, nil, consumer)
-	return trace, err
+	var err error
+	receiver, ok := receivers[rCfg]
+	if !ok {
+		receiver, err = newFluentReceiver(params.Logger, rCfg, nil, nil)
+		if err != nil {
+			return &fluentReceiver{}, nil
+		}
+		receivers[rCfg] = receiver
+	}
+	return receiver, nil
 }
