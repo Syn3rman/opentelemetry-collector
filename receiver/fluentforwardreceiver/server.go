@@ -198,20 +198,21 @@ func parseSpan(dc *msgp.Reader) (pdata.Traces, error) {
 
 	rss := traceData.ResourceSpans()
 	rss.Resize(1)
-	rs := rss.At(0)
 
-	ilss := rs.InstrumentationLibrarySpans()
-	ilss.Resize(1)
-
-	err = fluentSpanToInternal(dc, ilss)
+	err = fluentSpanToInternal(dc, rss)
 	if err != nil {
 		return traceData, err
 	}
 	return traceData, nil
 }
 
-func fluentSpanToInternal(dc *msgp.Reader, dest pdata.InstrumentationLibrarySpansSlice) error {
-	spanSlice := dest.At(0).Spans()
+func fluentSpanToInternal(dc *msgp.Reader, rss pdata.ResourceSpansSlice) error {
+	rs := rss.At(0)
+
+	ilss := rs.InstrumentationLibrarySpans()
+	ilss.Resize(1)
+
+	spanSlice := ilss.At(0).Spans()
 	spanSlice.Resize(1)
 	span := spanSlice.At(0)
 
@@ -276,9 +277,11 @@ func fluentSpanToInternal(dc *msgp.Reader, dest pdata.InstrumentationLibrarySpan
 		case "statusMessage":
 			span.Status().SetMessage(val.(string))
 		case "instrumentationLibraryName":
-			dest.At(0).InstrumentationLibrary().SetName(val.(string))
+			ilss.At(0).InstrumentationLibrary().SetName(val.(string))
 		case "instrumentationLibraryVersion":
-			dest.At(0).InstrumentationLibrary().SetVersion(val.(string))
+			ilss.At(0).InstrumentationLibrary().SetVersion(val.(string))
+		case "resource":
+			setAttributes(val.(map[string](interface{})), rs.Resource().Attributes())
 		default:
 			return errors.New("Encountered unknown field while parsing span")
 		}
