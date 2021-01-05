@@ -118,7 +118,7 @@ func (s *server) handleConn(ctx context.Context, conn net.Conn) error {
 			panic("programmer bug in mode handling")
 		}
 
-		tag, err := readTag(reader)
+		tag, arrLen, err := readTag(reader)
 		if err != nil {
 			return fmt.Errorf("Error in reading tag: %v", err)
 		}
@@ -131,7 +131,7 @@ func (s *server) handleConn(ctx context.Context, conn net.Conn) error {
 			s.traceCh <- traces
 
 		} else {
-			err = event.DecodeMsg(reader)
+			err = event.DecodeMsg(reader, arrLen, tag)
 			if err != nil {
 				if err != io.EOF {
 					stats.Record(ctx, observ.FailedToParse.M(1))
@@ -157,57 +157,55 @@ func (s *server) handleConn(ctx context.Context, conn net.Conn) error {
 	}
 }
 
-func readTag(dc *msgp.Reader) (string, error) {
+func readTag(dc *msgp.Reader) (string, uint32, error) {
 	arrLen, err := dc.ReadArrayHeader()
 	if err != nil {
 		err = msgp.WrapError(err)
-		return "", err
-	}
-
-	if arrLen < 2 || arrLen > 3 {
-		err = msgp.ArrayError{Wanted: 2, Got: arrLen}
-		return "", err
+		return "", 0, err
 	}
 
 	tag, err := dc.ReadString()
 	if err != nil {
-		return "", msgp.WrapError(err, "Tag")
+		return "", 0, msgp.WrapError(err, "Tag")
 	}
-	return tag, nil
+	return tag, arrLen, nil
 }
 
 func parseSpan(dc *msgp.Reader) (pdata.Traces, error) {
-
 	var err error
 	traceData := pdata.NewTraces()
 
-	_, err = dc.ReadArrayHeader()
+	// number of spans to be exported
+	spansLen, err := dc.ReadArrayHeader()
 	if err != nil {
 		return traceData, msgp.WrapError(err)
 	}
 
-	_, err = dc.ReadArrayHeader()
-	if err != nil {
-		return traceData, msgp.WrapError(err, "Record")
+	for i := 0; i < int(spansLen); i++ {
+		_, err = dc.ReadArrayHeader()
+		if err != nil {
+			return traceData, msgp.WrapError(err, "Record")
+		}
+
+		// Since the first field is the end timestamp of the span and it is already present in the span field,
+		// there is no need to read it
+
+		err = dc.Skip()
+
+		rss := traceData.ResourceSpans()
+		rss.Resize(int(spansLen))
+
+		err = fluentSpanToInternal(dc, rss, i)
+		if err != nil {
+			return traceData, err
+		}
 	}
 
-	// Since the first field is the end timestamp of the span and it is already present in the span field,
-	// there is no need to read it
-
-	err = dc.Skip()
-
-	rss := traceData.ResourceSpans()
-	rss.Resize(1)
-
-	err = fluentSpanToInternal(dc, rss)
-	if err != nil {
-		return traceData, err
-	}
 	return traceData, nil
 }
 
-func fluentSpanToInternal(dc *msgp.Reader, rss pdata.ResourceSpansSlice) error {
-	rs := rss.At(0)
+func fluentSpanToInternal(dc *msgp.Reader, rss pdata.ResourceSpansSlice, i int) error {
+	rs := rss.At(i)
 
 	ilss := rs.InstrumentationLibrarySpans()
 	ilss.Resize(1)
@@ -242,12 +240,24 @@ func fluentSpanToInternal(dc *msgp.Reader, rss pdata.ResourceSpansSlice) error {
 			span.SetTraceID(pdata.TraceID(data.NewTraceID(traceId)))
 		case "spanId":
 			var spanId [8]byte
-			copy(spanId[:], val.(string))
+			decoded, err := hex.DecodeString(val.(string))
+			if err != nil {
+				fmt.Errorf("Error while parsing SpanID: %v", err)
+			}
+			copy(spanId[:], decoded)
 			span.SetSpanID(pdata.NewSpanID(spanId))
 		case "parentSpanId":
 			var parentSpanId [8]byte
-			copy(parentSpanId[:], val.(string))
-			span.SetSpanID(pdata.SpanID(data.NewSpanID(parentSpanId)))
+			if val.(string) == "0000000000000000" {
+				parentSpanId = [8]byte{0}
+			} else {
+				decoded, err := hex.DecodeString(val.(string))
+				if err != nil {
+					fmt.Errorf("Error while parsing ParentSpanID: %v", err)
+				}
+				copy(parentSpanId[:], decoded)
+			}
+			span.SetParentSpanID(pdata.NewSpanID(parentSpanId))
 		case "name":
 			span.SetName(val.(string))
 		case "spanKind":

@@ -34,7 +34,7 @@ const tagAttributeKey = "fluent.tag"
 // which describes the fields in much greater detail.
 
 type Event interface {
-	DecodeMsg(dc *msgp.Reader) error
+	DecodeMsg(dc *msgp.Reader, arrLen uint32, tag string) error
 	LogRecords() pdata.LogSlice
 	Chunk() string
 	Compressed() string
@@ -188,24 +188,14 @@ func (melr *MessageEventLogRecord) LogRecords() pdata.LogSlice {
 	return melr.LogSlice
 }
 
-func (melr *MessageEventLogRecord) DecodeMsg(dc *msgp.Reader) error {
+func (melr *MessageEventLogRecord) DecodeMsg(dc *msgp.Reader, arrLen uint32, tag string) error {
 	melr.LogSlice = pdata.NewLogSlice()
 	melr.LogSlice.Resize(1)
 
-	var arrLen uint32
 	var err error
 
-	arrLen, err = dc.ReadArrayHeader()
-	if err != nil {
-		return msgp.WrapError(err)
-	}
 	if arrLen > 4 || arrLen < 3 {
 		return msgp.ArrayError{Wanted: 3, Got: arrLen}
-	}
-
-	tag, err := dc.ReadString()
-	if err != nil {
-		return msgp.WrapError(err, "Tag")
 	}
 
 	attrs := melr.LogSlice.At(0).Attributes()
@@ -262,23 +252,12 @@ func (fe *ForwardEventLogRecords) LogRecords() pdata.LogSlice {
 	return fe.LogSlice
 }
 
-func (fe *ForwardEventLogRecords) DecodeMsg(dc *msgp.Reader) (err error) {
+func (fe *ForwardEventLogRecords) DecodeMsg(dc *msgp.Reader, arrLen uint32, tag string) (err error) {
 	fe.LogSlice = pdata.NewLogSlice()
 
-	var arrLen uint32
-	arrLen, err = dc.ReadArrayHeader()
-	if err != nil {
-		err = msgp.WrapError(err)
-		return
-	}
 	if arrLen < 2 || arrLen > 3 {
 		err = msgp.ArrayError{Wanted: 2, Got: arrLen}
 		return
-	}
-
-	tag, err := dc.ReadString()
-	if err != nil {
-		return msgp.WrapError(err, "Tag")
 	}
 
 	entryLen, err := dc.ReadArrayHeader()
@@ -336,20 +315,11 @@ func (pfe *PackedForwardEventLogRecords) LogRecords() pdata.LogSlice {
 
 // DecodeMsg implements msgp.Decodable.  This was originally code generated but
 // then manually copied here in order to handle the optional Options field.
-func (pfe *PackedForwardEventLogRecords) DecodeMsg(dc *msgp.Reader) error {
+func (pfe *PackedForwardEventLogRecords) DecodeMsg(dc *msgp.Reader, arrLen uint32, tag string) error {
 	pfe.LogSlice = pdata.NewLogSlice()
 
-	arrLen, err := dc.ReadArrayHeader()
-	if err != nil {
-		return msgp.WrapError(err)
-	}
 	if arrLen < 2 || arrLen > 3 {
 		return msgp.ArrayError{Wanted: 2, Got: arrLen}
-	}
-
-	tag, err := dc.ReadString()
-	if err != nil {
-		return msgp.WrapError(err, "Tag")
 	}
 
 	entriesFirstByte, err := dc.R.Peek(1)

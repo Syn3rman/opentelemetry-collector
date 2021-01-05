@@ -77,9 +77,9 @@ func createTracesReceiver(
 	return recv, err
 }
 
-// This is the map of already created OpenCensus receivers for particular configurations.
-// We maintain this map because the Factory is asked trace and metric receivers separately
-// when it gets CreateTracesReceiver() and CreateMetricsReceiver() but they must not
+// This is the map of already created fluent receivers for particular configurations.
+// We maintain this map because the Factory is asked trace and log receivers separately
+// when it gets CreateTracesReceiver() and CreateLogsReceiver() but they must not
 // create separate objects, they must use one ocReceiver object per configuration.
 var receivers = map[*Config]*fluentReceiver{}
 
